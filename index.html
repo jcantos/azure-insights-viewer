@@ -127,7 +127,7 @@
                 </div>
             </div>
 
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div class="grid grid-cols-1 md:grid-cols-5 gap-4">
                 <div>
                     <label for="logType" class="block text-sm font-medium text-gray-700 mb-1">Log Type</label>
                     <select id="logType" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500">
@@ -145,6 +145,14 @@
                         <option value="warning">Warning</option>
                         <option value="error">Error</option>
                         <option value="critical">Critical</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="resolutionStatus" class="block text-sm font-medium text-gray-700 mb-1">Resolution Status</label>
+                    <select id="resolutionStatus" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500">
+                        <option value="unresolved" selected>Unresolved</option>
+                        <option value="resolved">Resolved</option>
+                        <option value="all">All</option>
                     </select>
                 </div>
                 <div>
@@ -240,8 +248,22 @@
                 <div id="logDetailsContent" class="json-viewer">
                     <!-- Log details will be inserted here -->
                 </div>
+                <div id="exceptionIssuePanel" class="mt-4 border-t border-gray-200 pt-4 hidden">
+                    <div class="flex items-center justify-between mb-2">
+                        <h4 class="text-sm font-semibold text-gray-800">Exception Notes</h4>
+                        <span id="exceptionIssueStatus" class="px-2 py-1 text-xs rounded-full bg-gray-100 text-gray-800">Unresolved</span>
+                    </div>
+                    <textarea id="exceptionNotes" rows="4" placeholder="Add observations for this exception..."
+                        class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"></textarea>
+                </div>
             </div>
             <div class="border-t border-gray-200 px-6 py-4 flex justify-end">
+                <button id="toggleResolvedBtn" class="hidden bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-lg transition duration-150 ease-in-out mr-2">
+                    <i class="fas fa-check mr-2"></i> Mark Resolved
+                </button>
+                <button id="saveNotesBtn" class="hidden bg-gray-700 hover:bg-gray-800 text-white font-medium py-2 px-4 rounded-lg transition duration-150 ease-in-out mr-2">
+                    <i class="fas fa-save mr-2"></i> Save Notes
+                </button>
                 <button id="copyDetails" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition duration-150 ease-in-out mr-2">
                     <i class="fas fa-copy mr-2"></i> Copy
                 </button>
@@ -264,6 +286,7 @@
             const customRangeContainer = document.getElementById('customRangeContainer');
             const logTypeSelect = document.getElementById('logType');
             const severitySelect = document.getElementById('severity');
+            const resolutionStatusSelect = document.getElementById('resolutionStatus');
             const searchTermInput = document.getElementById('searchTerm');
             const applyFiltersBtn = document.getElementById('applyFilters');
             const refreshBtn = document.getElementById('refreshBtn');
@@ -276,6 +299,11 @@
             const closeModal = document.getElementById('closeModal');
             const copyDetailsBtn = document.getElementById('copyDetails');
             const logDetailsContent = document.getElementById('logDetailsContent');
+            const exceptionIssuePanel = document.getElementById('exceptionIssuePanel');
+            const exceptionIssueStatus = document.getElementById('exceptionIssueStatus');
+            const exceptionNotesInput = document.getElementById('exceptionNotes');
+            const toggleResolvedBtn = document.getElementById('toggleResolvedBtn');
+            const saveNotesBtn = document.getElementById('saveNotesBtn');
             const dimensionKeySelect = document.getElementById('dimensionKey');
             const dimensionOperatorSelect = document.getElementById('dimensionOperator');
             const dimensionValueInput = document.getElementById('dimensionValue');
@@ -290,6 +318,8 @@
             let filteredLogs = [];
             let currentAppId = '';
             let currentApiKey = '';
+            let exceptionIssues = {};
+            let selectedLog = null;
 
             // State for custom dimensions filters
             let customDimensionsKeys = [];
@@ -305,6 +335,8 @@
             closeModalBtn.addEventListener('click', closeModalWindow);
             closeModal.addEventListener('click', closeModalWindow);
             copyDetailsBtn.addEventListener('click', copyLogDetails);
+            toggleResolvedBtn.addEventListener('click', toggleSelectedExceptionResolved);
+            saveNotesBtn.addEventListener('click', saveSelectedExceptionNotes);
             addDimensionFilterBtn.addEventListener('click', addDimensionFilter);
             
             // Initialize
@@ -355,6 +387,7 @@
                         setVisibilityPanels();
                         updateConnectionStatus();
                         storeCredentials();
+                        loadExceptionIssues();
                         fetchLogs();
                         showLoading(false);
                         showAlert('Successfully connected to Application Insights', 'success');
@@ -517,34 +550,46 @@
                     // Transform API response to our log format
                     logsData = response.tables[0].rows.map(row => {
                         const columns = response.tables[0].columns;
+                        const getValue = (columnName) => {
+                            const index = columns.findIndex(c => c.name === columnName);
+                            return index >= 0 ? row[index] : undefined;
+                        };
+                        const itemType = getValue('itemType')?.toLowerCase() || 'unknown';
+                        const problemId = getValue('problemId');
+                        const outerMessage = getValue('outerMessage');
+                        const details = getValue('details');
                         const log = {
                             id: `log-${Math.random().toString(36).substr(2, 9)}`,
-                            timestamp: row[columns.findIndex(c => c.name === 'timestamp')],
-                            type: row[columns.findIndex(c => c.name === 'itemType')]?.toLowerCase() || 'unknown',
-                            severity: mapSeverityLevel(row[columns.findIndex(c => c.name === 'severityLevel')]),
+                            timestamp: getValue('timestamp'),
+                            type: itemType,
+                            severity: mapSeverityLevel(getValue('severityLevel')),
+                            problemId,
+                            fingerprint: null,
                             raw: row
                         };
                         
                         // Add type-specific fields
                         if (log.type === 'customevent') {
-                            log.name = row[columns.findIndex(c => c.name === 'name')] || 'Custom Event';
+                            log.name = getValue('name') || 'Custom Event';
                             log.properties = {
-                                customDimensions: row[columns.findIndex(c => c.name === 'customDimensions')]
+                                customDimensions: getValue('customDimensions')
                             };
                         } else if (log.type === 'exception') {
-                            log.name = row[columns.findIndex(c => c.name === 'problemId')] || 'Exception';
+                            log.name = problemId || 'Exception';
                             log.properties = {
-                                customDimensions: row[columns.findIndex(c => c.name === 'customDimensions')],
+                                customDimensions: getValue('customDimensions'),
                                 details: {
-                                    message: row[columns.findIndex(c => c.name === 'outerMessage')],
-                                    stackTrace: row[columns.findIndex(c => c.name === 'details')]
+                                    message: outerMessage,
+                                    stackTrace: details
                                 }
                             };
+                            log.fingerprint = getExceptionFingerprint(log);
+                            log.issue = getExceptionIssue(log);
                         } else {
                             log.name = log.type.charAt(0).toUpperCase() + log.type.slice(1);
                             log.properties = {
-                                message: row[columns.findIndex(c => c.name === 'message')],
-                                customDimensions: row[columns.findIndex(c => c.name === 'customDimensions')]
+                                message: getValue('message'),
+                                customDimensions: getValue('customDimensions')
                             };
                         }
                         
@@ -586,6 +631,7 @@
                 
                 const logType = logTypeSelect.value;
                 const severity = severitySelect.value;
+                const resolutionStatus = resolutionStatusSelect.value;
                 const searchTerm = searchTermInput.value.toLowerCase();
                 
                 filteredLogs = logsData.filter(log => {
@@ -597,6 +643,15 @@
                     
                     // Filter by severity
                     if (severity !== 'all' && log.severity !== severity) return false;
+
+                    // Filter by exception resolution status
+                    if (log.type === 'exception') {
+                        log.issue = getExceptionIssue(log);
+                        if (resolutionStatus === 'unresolved' && log.issue.resolved) return false;
+                        if (resolutionStatus === 'resolved' && !log.issue.resolved) return false;
+                    } else if (resolutionStatus === 'resolved') {
+                        return false;
+                    }
                     
                     // Filter by search term
                     if (searchTerm) {
@@ -803,6 +858,17 @@
                 }
                 
                 const time = new Date(log.timestamp).toLocaleString();
+                const issue = log.type === 'exception' ? getExceptionIssue(log) : null;
+                const hasNotes = issue?.notes?.trim();
+                const issueControls = log.type === 'exception' ? `
+                    <div class="mt-3 flex items-center gap-2">
+                        <button class="toggle-resolved px-3 py-1 text-sm rounded-lg ${issue.resolved ? 'bg-yellow-100 text-yellow-800 hover:bg-yellow-200' : 'bg-green-100 text-green-800 hover:bg-green-200'}" data-id="${log.id}">
+                            <i class="fas ${issue.resolved ? 'fa-undo' : 'fa-check'} mr-1"></i>${issue.resolved ? 'Reopen' : 'Mark resolved'}
+                        </button>
+                        ${hasNotes ? '<span class="px-2 py-1 text-xs rounded-full bg-gray-100 text-gray-700"><i class="fas fa-note-sticky mr-1"></i>Notes</span>' : ''}
+                        ${issue.resolved ? '<span class="px-2 py-1 text-xs rounded-full bg-green-100 text-green-800">Resolved</span>' : ''}
+                    </div>
+                ` : '';
                 
                 logElement.innerHTML = `
                     <div class="flex items-start">
@@ -825,10 +891,19 @@
                             <div class="mt-2 text-sm text-gray-600 truncate">
                                 ${getLogPreview(log)}
                             </div>
+                            ${issueControls}
                         </div>
                     </div>
                 `;
                 
+                const toggleButton = logElement.querySelector('.toggle-resolved');
+                if (toggleButton) {
+                    toggleButton.addEventListener('click', (event) => {
+                        event.stopPropagation();
+                        toggleExceptionResolved(log);
+                    });
+                }
+
                 logElement.addEventListener('click', () => showLogDetails(log));
                 return logElement;
             }
@@ -855,14 +930,68 @@
             }
             
             function showLogDetails(log) {
+                selectedLog = log;
                 logDetailsContent.textContent = JSON.stringify(log.raw, null, 2);
+                renderExceptionIssuePanel(log);
                 logDetailsModal.classList.remove('hidden');
                 document.body.style.overflow = 'hidden';
             }
             
             function closeModalWindow() {
                 logDetailsModal.classList.add('hidden');
+                selectedLog = null;
                 document.body.style.overflow = '';
+            }
+
+            function renderExceptionIssuePanel(log) {
+                if (log.type !== 'exception') {
+                    exceptionIssuePanel.classList.add('hidden');
+                    toggleResolvedBtn.classList.add('hidden');
+                    saveNotesBtn.classList.add('hidden');
+                    return;
+                }
+
+                const issue = getExceptionIssue(log);
+                exceptionIssuePanel.classList.remove('hidden');
+                toggleResolvedBtn.classList.remove('hidden');
+                saveNotesBtn.classList.remove('hidden');
+                exceptionNotesInput.value = issue.notes || '';
+
+                if (issue.resolved) {
+                    exceptionIssueStatus.textContent = 'Resolved';
+                    exceptionIssueStatus.className = 'px-2 py-1 text-xs rounded-full bg-green-100 text-green-800';
+                    toggleResolvedBtn.innerHTML = '<i class="fas fa-undo mr-2"></i> Reopen';
+                    toggleResolvedBtn.className = 'bg-yellow-600 hover:bg-yellow-700 text-white font-medium py-2 px-4 rounded-lg transition duration-150 ease-in-out mr-2';
+                } else {
+                    exceptionIssueStatus.textContent = 'Unresolved';
+                    exceptionIssueStatus.className = 'px-2 py-1 text-xs rounded-full bg-gray-100 text-gray-800';
+                    toggleResolvedBtn.innerHTML = '<i class="fas fa-check mr-2"></i> Mark Resolved';
+                    toggleResolvedBtn.className = 'bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-lg transition duration-150 ease-in-out mr-2';
+                }
+            }
+
+            function toggleSelectedExceptionResolved() {
+                if (!selectedLog || selectedLog.type !== 'exception') return;
+
+                updateExceptionIssue(selectedLog, { notes: exceptionNotesInput.value });
+                toggleExceptionResolved(selectedLog);
+                renderExceptionIssuePanel(selectedLog);
+            }
+
+            function saveSelectedExceptionNotes() {
+                if (!selectedLog || selectedLog.type !== 'exception') return;
+
+                updateExceptionIssue(selectedLog, { notes: exceptionNotesInput.value });
+                renderExceptionIssuePanel(selectedLog);
+                applyFilters();
+                showAlert('Notes saved', 'success');
+            }
+
+            function toggleExceptionResolved(log) {
+                const issue = getExceptionIssue(log);
+                updateExceptionIssue(log, { resolved: !issue.resolved });
+                applyFilters();
+                showAlert(issue.resolved ? 'Exception reopened' : 'Exception marked as resolved', 'success');
             }
             
             function copyLogDetails() {
@@ -892,6 +1021,89 @@
                 logsContainer.innerHTML = '';
                 logsContainer.classList.add('hidden');
                 noLogsMessage.classList.remove('hidden');
+            }
+
+            function getExceptionStorageKey() {
+                return `azureInsightsExceptionIssues:${currentAppId || 'default'}`;
+            }
+
+            function loadExceptionIssues() {
+                try {
+                    exceptionIssues = JSON.parse(localStorage.getItem(getExceptionStorageKey())) || {};
+                } catch (e) {
+                    console.error('Failed to load exception issues:', e);
+                    exceptionIssues = {};
+                }
+            }
+
+            function saveExceptionIssues() {
+                try {
+                    localStorage.setItem(getExceptionStorageKey(), JSON.stringify(exceptionIssues));
+                } catch (e) {
+                    console.error('Failed to save exception issues:', e);
+                }
+            }
+
+            function getExceptionFingerprint(log) {
+                const message = log.properties?.details?.message || '';
+                const stackTrace = normalizeStackTrace(log.properties?.details?.stackTrace);
+                const source = log.problemId
+                    ? `${currentAppId}:exception:${log.problemId}`
+                    : `${currentAppId}:exception:${message}:${stackTrace}`;
+
+                return `ex-${hashString(source)}`;
+            }
+
+            function normalizeStackTrace(stackTrace) {
+                if (!stackTrace) return '';
+
+                const text = typeof stackTrace === 'string'
+                    ? stackTrace
+                    : JSON.stringify(stackTrace);
+
+                return text
+                    .split('\n')
+                    .map(line => line.trim())
+                    .filter(Boolean)
+                    .slice(0, 5)
+                    .join('|');
+            }
+
+            function hashString(value) {
+                let hash = 0;
+                const text = value || '';
+
+                for (let i = 0; i < text.length; i++) {
+                    hash = ((hash << 5) - hash) + text.charCodeAt(i);
+                    hash |= 0;
+                }
+
+                return Math.abs(hash).toString(36);
+            }
+
+            function getExceptionIssue(log) {
+                if (!log.fingerprint) {
+                    log.fingerprint = getExceptionFingerprint(log);
+                }
+
+                return exceptionIssues[log.fingerprint] || {
+                    resolved: false,
+                    notes: '',
+                    updatedAt: null
+                };
+            }
+
+            function updateExceptionIssue(log, updates) {
+                const currentIssue = getExceptionIssue(log);
+                const nextIssue = {
+                    ...currentIssue,
+                    ...updates,
+                    updatedAt: new Date().toISOString()
+                };
+
+                exceptionIssues[log.fingerprint] = nextIssue;
+                log.issue = nextIssue;
+                saveExceptionIssues();
             }
             
             function showLoading(show) {
