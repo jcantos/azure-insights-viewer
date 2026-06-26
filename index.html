@@ -324,11 +324,23 @@
             // State for custom dimensions filters
             let customDimensionsKeys = [];
             let activeDimensionFilters = [];
+            const filtersStorageKey = 'azureInsightsFilters';
+            let isRestoringFilters = false;
+            let pendingDimensionKey = '';
 
             // Event listeners
             toggleVisibilityBtn.addEventListener('click', togglePasswordVisibility);
             connectBtn.addEventListener('click', toggleConnection);
             timeRangeSelect.addEventListener('change', handleTimeRangeChange);
+            logTypeSelect.addEventListener('change', saveFilters);
+            severitySelect.addEventListener('change', saveFilters);
+            resolutionStatusSelect.addEventListener('change', saveFilters);
+            searchTermInput.addEventListener('input', saveFilters);
+            dimensionKeySelect.addEventListener('change', saveFilters);
+            dimensionOperatorSelect.addEventListener('change', saveFilters);
+            dimensionValueInput.addEventListener('input', saveFilters);
+            document.getElementById('startTime').addEventListener('change', saveFilters);
+            document.getElementById('endTime').addEventListener('change', saveFilters);
             applyFiltersBtn.addEventListener('click', fetchLogs);
             refreshBtn.addEventListener('click', refreshLogs);
             clearBtn.addEventListener('click', clearLogs);
@@ -340,6 +352,7 @@
             addDimensionFilterBtn.addEventListener('click', addDimensionFilter);
             
             // Initialize
+            loadFilters();
             checkStoredConnection();
             
             // Functions
@@ -469,19 +482,25 @@
                 if (timeRangeSelect.value === 'custom') {
                     customRangeContainer.classList.remove('hidden');
                     
-                    // Set default values for custom range
-                    const now = new Date();
-                    const oneHourAgo = new Date(now.getTime() - 3600000);
-                    
-                    document.getElementById('endTime').value = now.toISOString().slice(0, 16);
-                    document.getElementById('startTime').value = oneHourAgo.toISOString().slice(0, 16);
+                    if (!document.getElementById('startTime').value || !document.getElementById('endTime').value) {
+                        // Set default values for custom range
+                        const now = new Date();
+                        const oneHourAgo = new Date(now.getTime() - 3600000);
+
+                        document.getElementById('endTime').value = now.toISOString().slice(0, 16);
+                        document.getElementById('startTime').value = oneHourAgo.toISOString().slice(0, 16);
+                    }
                 } else {
                     customRangeContainer.classList.add('hidden');
                 }
+
+                saveFilters();
             }
             
             async function fetchLogs() {
                 if (!isConnected) return;
+
+                saveFilters();
                 
                 showLoading(true);
                 logsContainer.classList.add('hidden');
@@ -736,12 +755,23 @@
             function updateDimensionKeySelect() {
                 dimensionKeySelect.innerHTML = '<option value="">Select dimension</option>';
                 
-                customDimensionsKeys.forEach(key => {
+                const availableKeys = new Set(customDimensionsKeys);
+                if (pendingDimensionKey) {
+                    availableKeys.add(pendingDimensionKey);
+                }
+
+                Array.from(availableKeys).sort().forEach(key => {
                     const option = document.createElement('option');
                     option.value = key;
                     option.textContent = key;
                     dimensionKeySelect.appendChild(option);
                 });
+
+                if (pendingDimensionKey) {
+                    dimensionKeySelect.value = pendingDimensionKey;
+                    pendingDimensionKey = '';
+                    saveFilters();
+                }
             }
             
             function addDimensionFilter() {
@@ -763,10 +793,12 @@
                 const filter = { key, operator, value };
                 activeDimensionFilters.push(filter);
                 renderActiveDimensionFilters();
+                saveFilters();
                 
                 // Reset inputs
                 dimensionKeySelect.value = '';
                 dimensionValueInput.value = '';
+                saveFilters();
             }
             
             function renderActiveDimensionFilters() {
@@ -801,6 +833,7 @@
                         const index = parseInt(this.getAttribute('data-index'));
                         activeDimensionFilters.splice(index, 1);
                         renderActiveDimensionFilters();
+                        saveFilters();
                     });
                 });
             }
@@ -1021,6 +1054,70 @@
                 logsContainer.innerHTML = '';
                 logsContainer.classList.add('hidden');
                 noLogsMessage.classList.remove('hidden');
+            }
+
+            function getCurrentFilters() {
+                return {
+                    timeRange: timeRangeSelect.value,
+                    startTime: document.getElementById('startTime').value,
+                    endTime: document.getElementById('endTime').value,
+                    logType: logTypeSelect.value,
+                    severity: severitySelect.value,
+                    resolutionStatus: resolutionStatusSelect.value,
+                    searchTerm: searchTermInput.value,
+                    dimensionKey: dimensionKeySelect.value,
+                    dimensionOperator: dimensionOperatorSelect.value,
+                    dimensionValue: dimensionValueInput.value,
+                    activeDimensionFilters
+                };
+            }
+
+            function saveFilters() {
+                if (isRestoringFilters) return;
+
+                try {
+                    localStorage.setItem(filtersStorageKey, JSON.stringify(getCurrentFilters()));
+                } catch (e) {
+                    console.error('Failed to save filters:', e);
+                }
+            }
+
+            function loadFilters() {
+                try {
+                    const storedFilters = JSON.parse(localStorage.getItem(filtersStorageKey));
+                    if (!storedFilters) return;
+
+                    isRestoringFilters = true;
+                    setSelectValue(timeRangeSelect, storedFilters.timeRange);
+                    document.getElementById('startTime').value = storedFilters.startTime || '';
+                    document.getElementById('endTime').value = storedFilters.endTime || '';
+                    setSelectValue(logTypeSelect, storedFilters.logType);
+                    setSelectValue(severitySelect, storedFilters.severity);
+                    setSelectValue(resolutionStatusSelect, storedFilters.resolutionStatus);
+                    searchTermInput.value = storedFilters.searchTerm || '';
+                    setSelectValue(dimensionOperatorSelect, storedFilters.dimensionOperator);
+                    dimensionValueInput.value = storedFilters.dimensionValue || '';
+                    activeDimensionFilters = Array.isArray(storedFilters.activeDimensionFilters)
+                        ? storedFilters.activeDimensionFilters
+                        : [];
+
+                    handleTimeRangeChange();
+                    renderActiveDimensionFilters();
+                    pendingDimensionKey = storedFilters.dimensionKey || '';
+                } catch (e) {
+                    console.error('Failed to load filters:', e);
+                } finally {
+                    isRestoringFilters = false;
+                }
+            }
+
+            function setSelectValue(selectElement, value) {
+                if (!value) return;
+
+                const hasOption = Array.from(selectElement.options).some(option => option.value === value);
+                if (hasOption) {
+                    selectElement.value = value;
+                }
             }
 
             function getExceptionStorageKey() {
